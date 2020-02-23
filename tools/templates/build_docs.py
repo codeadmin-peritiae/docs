@@ -47,13 +47,18 @@ flags.DEFINE_string(
 flags.DEFINE_bool('search_hints', True,
                   'Include metadata search hints in the generated files')
 
-flags.DEFINE_string('site_path', '<your_module>/api_docs/python',
+flags.DEFINE_string('site_path', '/api_docs/python',
                     'Path prefix in the _toc.yaml')
 
 
-def main(argv):
-  if argv[1:]:
-    raise ValueError('Unrecognized arguments: {}'.format(argv[1:]))
+def gen_api_docs():
+  """Generates api docs for the tensorflow docs package."""
+
+  # The below `del`'s are to avoid the api_gen_test to not document these.
+  # Please remove these lines from your build_docs.py files when you create
+  # them.
+  del tensorflow_docs.google
+  del tensorflow_docs.api_generator.tf_inspect
 
   doc_generator = generate_lib.DocGenerator(
       root_title=PROJECT_FULL_NAME,
@@ -61,7 +66,7 @@ def main(argv):
       py_modules=[(PROJECT_SHORT_NAME, tensorflow_docs)],
       # Replace `tensorflow_docs` with your module, here.
       base_dir=os.path.dirname(tensorflow_docs.__file__),
-      code_url_prefix=FLAGS.CODE_URL_PREFIX,
+      code_url_prefix=FLAGS.code_url_prefix,
       search_hints=FLAGS.search_hints,
       site_path=FLAGS.site_path,
       private_map={},
@@ -71,6 +76,13 @@ def main(argv):
   doc_generator.build(FLAGS.output_dir)
 
   print('Output docs to: ', FLAGS.output_dir)
+
+
+def main(argv):
+  if argv[1:]:
+    raise ValueError('Unrecognized arguments: {}'.format(argv[1:]))
+
+  gen_api_docs()
 
 
 if __name__ == '__main__':
