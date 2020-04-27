@@ -12,7 +12,7 @@ covered by the [API stability promises](https://www.tensorflow.org/guide/version
 * [JavaScript](https://js.tensorflow.org/api/latest/)
 * [C++](https://www.tensorflow.org/api_docs/cc/)
 * [Java](https://www.tensorflow.org/api_docs/java/reference/org/tensorflow/package-summary)
-* [Go](https://godoc.org/github.com/tensorflow/tensorflow/tensorflow/go)
+* [Go](https://pkg.go.dev/github.com/tensorflow/tensorflow/tensorflow/go)
 * [Swift (Early Release)](https://www.tensorflow.org/swift)
 
 
@@ -24,6 +24,7 @@ For example, see the bindings for:
 * [Haskell](https://github.com/tensorflow/haskell),
 * [Julia](https://github.com/malmaud/TensorFlow.jl),
 * [MATLAB](https://github.com/asteinh/tensorflow.m),
+* [R](https://github.com/rstudio/tensorflow),
 * [Ruby](https://github.com/somaticio/tensorflow.rb),
 * [Rust](https://github.com/tensorflow/rust), and
 * [Scala](https://github.com/eaplatanios/tensorflow_scala).

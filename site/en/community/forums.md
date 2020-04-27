@@ -4,8 +4,7 @@ As a community, we do much of our collaboration on public mailing lists. Please
 note that if you're looking for help using TensorFlow,
 [Stack Overflow](https://stackoverflow.com/questions/tagged/tensorflow) and
 [GitHub issues](https://github.com/tensorflow/tensorflow/issues) are the best
-initial places to look. For more information, see
-[how to get help](/community/#get_help).
+initial places to look.
 
 ## General TensorFlow lists
 
@@ -80,5 +79,5 @@ archives are public, different SIGs have their own membership policies.
     SIG Rust, for the Rust language bindings.
 *   [swift](https://groups.google.com/a/tensorflow.org/d/forum/swift) -
     Supporting SIG Swift, developing Swift for TensorFlow.
-*   [tensorboard](https://groups.google.com/a/tensorflow.org/d/forum/sig-tensorboard) -
+*   [tensorboard](https://groups.google.com/a/tensorflow.org/d/forum/tensorboard) -
     Supporting SIG TensorBoard, for plugin development and other contribution.

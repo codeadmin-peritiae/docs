@@ -325,13 +325,13 @@ use to build the *pip* package:
 
 <pre class="prettyprint lang-bsh">
 <code class="devsite-terminal">docker pull tensorflow/tensorflow<var>:devel</var></code>
-<code class="devsite-terminal">docker run -it -w /tensorflow -v $PWD:/mnt -e HOST_PERMS="$(id -u):$(id -g)" \
+<code class="devsite-terminal">docker run -it -w /tensorflow_src -v $PWD:/mnt -e HOST_PERMS="$(id -u):$(id -g)" \
     tensorflow/tensorflow<var>:devel</var> bash</code>
 
 <code class="devsite-terminal tfo-terminal-root">git pull  # within the container, download the latest source code</code>
 </pre>
 
-The above `docker run` command starts a shell in the `/tensorflow` directory—the
+The above `docker run` command starts a shell in the `/tensorflow_src` directory—the
 root of the source tree. It mounts the host's current directory in the container's
 `/mnt` directory, and passes the host user's information to the container through
 an environmental variable (used to set permissions—Docker can make this tricky).
@@ -392,8 +392,9 @@ is configured to build a Python 3 *pip* package with GPU support:
 
 <pre class="prettyprint lang-bsh">
 <code class="devsite-terminal">docker pull tensorflow/tensorflow<var>:devel-gpu-py3</var></code>
-<code class="devsite-terminal">docker run --runtime=nvidia -it -w /tensorflow -v $PWD:/mnt -e HOST_PERMS="$(id -u):$(id -g)" \
+<code class="devsite-terminal">docker run --gpus all -it -w /tensorflow -v $PWD:/mnt -e HOST_PERMS="$(id -u):$(id -g)" \
     tensorflow/tensorflow<var>:devel-gpu-py3</var> bash</code>
+<code class="devsite-terminal tfo-terminal-root">git pull  # within the container, download the latest source code</code>
 </pre>
 
 Then, within the container's virtual environment, build the TensorFlow package
