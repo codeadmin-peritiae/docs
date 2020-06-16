@@ -18,14 +18,16 @@
 import ast
 import collections
 import enum
+import functools
 import inspect
 import itertools
 import json
 import os
 import re
 import textwrap
+import typing
 
-from typing import Any, Dict, List, Tuple, Iterable, NamedTuple, Optional
+from typing import Any, Dict, List, Tuple, Iterable, NamedTuple, Optional, Union
 
 import astor
 
@@ -36,6 +38,7 @@ from google.protobuf.message import Message as ProtoMessage
 
 class ObjType(enum.Enum):
   """Enum to standardize object type checks."""
+  TYPE_ALIAS = 'type_alias'
   MODULE = 'module'
   CLASS = 'class'
   CALLABLE = 'callable'
@@ -45,7 +48,9 @@ class ObjType(enum.Enum):
 
 def get_obj_type(py_obj: Any) -> ObjType:
   """Get the `ObjType` for the `py_object`."""
-  if inspect.ismodule(py_obj):
+  if hasattr(py_obj, '__args__') and hasattr(py_obj, '__origin__'):
+    return ObjType.TYPE_ALIAS
+  elif inspect.ismodule(py_obj):
     return ObjType.MODULE
   elif inspect.isclass(py_obj):
     return ObjType.CLASS
@@ -180,12 +185,13 @@ def _get_raw_docstring(py_object):
 
   # For object instances, inspect.getdoc does give us the docstring of their
   # type, which is not what we want. Only return the docstring if it is useful.
-  if get_obj_type(py_object) is not ObjType.OTHER:
+  if get_obj_type(py_object) not in (ObjType.TYPE_ALIAS, ObjType.OTHER):
     result = inspect.getdoc(py_object) or ''
   else:
     result = ''
 
   result = _StripTODOs()(result)
+  result = _StripPylints()(result)
   result = _AddDoctestFences()(result + '\n')
   return result
 
@@ -215,6 +221,13 @@ class _StripTODOs(object):
 
   def __call__(self, content: str) -> str:
     return self.TODO_RE.sub('', content)
+
+
+class _StripPylints(object):
+  PYLINT_RE = re.compile('# *?pylint:.*')
+
+  def __call__(self, content: str) -> str:
+    return self.PYLINT_RE.sub('', content)
 
 
 class IgnoreLineInBlock(object):
@@ -299,7 +312,7 @@ class ReferenceResolver(object):
       obj_type = get_obj_type(obj)
       if obj_type in (ObjType.CLASS, ObjType.MODULE):
         is_fragment[full_name] = False
-      elif obj_type is ObjType.CALLABLE:
+      elif obj_type in (ObjType.CALLABLE, ObjType.TYPE_ALIAS):
         if is_class_attr(full_name, visitor.index):
           is_fragment[full_name] = True
         else:
@@ -435,7 +448,7 @@ class ReferenceResolver(object):
 
     filters = [
         IgnoreLineInBlock('<pre class="tfo-notebook-code-cell-output">',
-                          '{% endhtmlescape %}</pre>'),
+                          '</pre>'),
         IgnoreLineInBlock('```', '```')
     ]
 
@@ -594,16 +607,14 @@ class ReferenceResolver(object):
     return f'<a href="{cc_relative_path}"><code>{link_text}</code></a>'
 
 
-# TODO(aselle): Collect these into a big list for all modules and functions
-# and make a rosetta stone page.
-def _handle_compatibility(doc):
+def _handle_compatibility(doc) -> Tuple[str, Dict[str, str]]:
   """Parse and remove compatibility blocks from the main docstring.
 
   Args:
-    doc: The docstring that contains compatibility notes"
+    doc: The docstring that contains compatibility notes.
 
   Returns:
-    a tuple of the modified doc string and a hash that maps from compatibility
+    A tuple of the modified doc string and a hash that maps from compatibility
     note type to the text of the note.
   """
   compatibility_notes = {}
@@ -666,26 +677,104 @@ class TitleBlock(object):
     items: A list of (name, value) string pairs. All items must have the same
       indentation.
   """
-  WHITESPACE_RE = re.compile(r'[ \n]+')
 
-  def __init__(self, title: str, text: str, items: Iterable[Tuple[str, str]]):
+  _INDENTATION_REMOVAL_RE = re.compile(r'( *)(.+)')
+
+  # Don't change the width="214px" without consulting with the devsite-team.
+  _TABLE_TEMPLATE = textwrap.dedent("""
+    <!-- Tabular view -->
+     <table class="responsive fixed orange">
+    <colgroup><col width="214px"><col></colgroup>
+    <tr><th colspan="2">{title}</th></tr>
+    {text}
+    {items}
+    </table>
+    """)
+
+  _ITEMS_TEMPLATE = textwrap.dedent("""\
+    <tr>
+    <td>
+    {name}
+    </td>
+    <td>
+    {description}
+    </td>
+    </tr>""")
+
+  _TEXT_TEMPLATE = textwrap.dedent("""\
+    <tr class="alt">
+    <td colspan="2">
+    {text}
+    </td>
+    </tr>""")
+
+  def __init__(self,
+               *,
+               title: Optional[str] = None,
+               text: str,
+               items: Iterable[Tuple[str, str]]):
     self.title = title
     self.text = text
     self.items = items
 
-  def __str__(self) -> str:
-    """Returns a markdown compatible version of the TitleBlock."""
+  def table_view(self, title_template: Optional[str] = None) -> str:
+    """Returns a tabular markdown version of the TitleBlock.
+
+    Tabular view is only for `Args`, `Returns`, `Raises` and `Attributes`. If
+    anything else is encountered, redirect to list view.
+
+    Args:
+      title_template: Template for title detailing how to display it.
+
+    Returns:
+      Table containing the content to display.
+    """
+
+    if title_template is not None:
+      title = title_template.format(title=self.title)
+    else:
+      title = self.title
+
+    text = self.text.strip()
+    if text:
+      text = self._TEXT_TEMPLATE.format(text=text)
+      text = self._INDENTATION_REMOVAL_RE.sub(r'\2', text)
+
+    items = []
+    for name, description in self.items:
+      if not description:
+        description = ''
+      else:
+        description = description.strip()
+      item_table = self._ITEMS_TEMPLATE.format(
+          name=f'`{name}`', description=description)
+      item_table = self._INDENTATION_REMOVAL_RE.sub(r'\2', item_table)
+      items.append(item_table)
+
+    return '\n' + self._TABLE_TEMPLATE.format(
+        title=title, text=text, items=''.join(items)) + '\n'
+
+  def list_view(self, title_template: str) -> str:
+    """Returns a List markdown version of the TitleBlock.
+
+    Args:
+      title_template: Template for title detailing how to display it.
+
+    Returns:
+      Markdown list containing the content to display.
+    """
+
     sub = []
-    sub.append('\n\n#### ' + self.title + ':\n')
+    sub.append(title_template.format(title=self.title))
     sub.append(textwrap.dedent(self.text))
     sub.append('\n')
+
     for name, description in self.items:
-      # Skip description if it's just whitespace
-      if self.WHITESPACE_RE.fullmatch(str(description)):
-        # Don't include the description if it's just whitespace.
+      description = description.strip()
+      if not description:
         sub.append(f'* <b>`{name}`</b>\n')
       else:
-        sub.append(f'* <b>`{name}`</b>: {description}')
+        sub.append(f'* <b>`{name}`</b>: {description}\n')
 
     return ''.join(sub)
 
@@ -710,7 +799,7 @@ class TitleBlock(object):
       re.MULTILINE | re.VERBOSE)
 
   @classmethod
-  def split_string(cls, docstring):
+  def split_string(cls, docstring: str):
     r"""Given a docstring split it into a list of `str` or `TitleBlock` chunks.
 
     For example the docstring of `tf.nn.relu`:
@@ -770,18 +859,20 @@ class TitleBlock(object):
       text = split.pop(0)
       items = _pairs(split)
 
-      title_block = cls(title, text, items)
+      title_block = cls(title=title, text=text, items=items)
       parts.append(title_block)
 
     return parts
 
 
-_DocstringInfo = collections.namedtuple(
-    '_DocstringInfo', ['brief', 'docstring_parts', 'compatibility'])
+class _DocstringInfo(typing.NamedTuple):
+  brief: str
+  docstring_parts: List[Union[TitleBlock, str]]
+  compatibility: Dict[str, str]
 
 
 def _parse_md_docstring(py_object, relative_path_to_root, full_name,
-                        reference_resolver):
+                        reference_resolver) -> _DocstringInfo:
   """Parse the object's docstring and return a `_DocstringInfo`.
 
   This function clears @@'s from the docstring, and replaces `` references
@@ -843,7 +934,7 @@ class TypeAnnotationExtractor(ast.NodeVisitor):
     self.arguments_typehint_exists = False
     self.return_typehint_exists = False
 
-  def visit_FunctionDef(self, node):  # pylint: disable=invalid-name
+  def visit_FunctionDef(self, node) -> None:  # pylint: disable=invalid-name
     """Visits the `FunctionDef` node in AST tree and extracts the typehints."""
 
     # Capture the return type annotation.
@@ -882,7 +973,7 @@ class ASTDefaultValueExtractor(ast.NodeVisitor):
     text_default_val = self._PAREN_NUMBER_RE.sub('\\1', text_default_val)
     return text_default_val
 
-  def visit_FunctionDef(self, node):  # pylint: disable=invalid-name
+  def visit_FunctionDef(self, node) -> None:  # pylint: disable=invalid-name
     """Visits the `FunctionDef` node and extracts the default values."""
 
     for default_val in node.args.defaults:
@@ -906,14 +997,192 @@ class FormatArguments(object):
       'init_ops.ones_initializer': 'tf.ones_initializer',
       'saver_pb2.SaverDef': 'tf.train.SaverDef',
   }
+
   _OBJECT_MEMORY_ADDRESS_RE = re.compile(r'<(?P<type>.+) object at 0x[\da-f]+>')
+
   # A regular expression capturing a python identifier.
   _IDENTIFIER_RE = r'[a-zA-Z_]\w*'
 
-  def __init__(self, type_annotations: Dict[str, str],
-               reverse_index: Dict[Any, str]) -> None:
+  _INDIVIDUAL_TYPES_RE = re.compile(
+      r"""
+        (?P<single_type>
+          ([\w.]*)
+          (?=$|,| |\]|\[)
+        )
+      """, re.IGNORECASE | re.VERBOSE)
+
+  _TYPING = frozenset(
+      list(typing.__dict__.keys()) +
+      ['int', 'str', 'bytes', 'float', 'complex', 'bool', 'None'])
+
+  _IMMUTABLE_TYPES = frozenset(
+      [int, str, bytes, float, complex, bool,
+       type(None), tuple, frozenset])
+
+  def __init__(
+      self,
+      type_annotations: Dict[str, str],
+      parser_config: ParserConfig,
+      func_full_name: str,
+  ) -> None:
     self._type_annotations = type_annotations
-    self._reverse_index = reverse_index
+    self._reverse_index = parser_config.reverse_index
+    self._reference_resolver = parser_config.reference_resolver
+    # func_full_name is used to calculate the relative path.
+    self._func_full_name = func_full_name
+
+    self._is_fragment = self._reference_resolver._is_fragment.get(
+        self._func_full_name, None)
+
+  def _calc_relative_path(self, single_type: str) -> str:
+    """Calculates the relative path of the type from the function.
+
+    The number of `..` are counted from `os.path.relpath` and adjusted based
+    on if the function (for which signature is being generated) is a fragment
+    or not.
+
+    Args:
+      single_type: The type for which the relative path is calculated.
+
+    Returns:
+      Relative path consisting of only `..` as a path.
+    """
+
+    func_full_path = self._func_full_name.replace('.', '/')
+    single_type = single_type.replace('.', '/')
+
+    dot_count = os.path.relpath(single_type, func_full_path).count('..')
+    # Methods are fragments, stand-alone functions are not.
+    if self._is_fragment:
+      dot_count -= 2
+    else:
+      dot_count -= 1
+
+    dot_list = ['..'] * dot_count
+    return os.path.join(*dot_list)  # pylint: disable=no-value-for-parameter
+
+  def _get_link(self, full_name: str, ast_typehint: str) -> str:
+    full_name = self._reference_resolver._duplicate_of.get(full_name, full_name)  # pylint: disable=protected-access
+    relative_path = self._calc_relative_path(ast_typehint)
+    url = os.path.join(relative_path, full_name.replace('.', '/')) + '.md'
+    # Use `full_name` for the text in the link since its available over
+    # `ast_typehint`.
+    return f'<a href="{url}"><code>{full_name}</code></a>'
+
+  def _extract_non_builtin_types(self, arg_obj: Any,
+                                 non_builtin_types: List[Any]) -> List[Any]:
+    """Extracts the non-builtin types from a type annotations object.
+
+    Recurses if an object contains `__args__` attribute. If an object is
+    an inbuilt object or an `Ellipsis` then its skipped.
+
+    Args:
+      arg_obj: Type annotation object.
+      non_builtin_types: List to keep track of the non-builtin types extracted.
+
+    Returns:
+      List of non-builtin types.
+    """
+
+    annotations = getattr(arg_obj, '__args__', [arg_obj])
+    if annotations is None:
+      annotations = [arg_obj]
+
+    for anno in annotations:
+      if self._reverse_index.get(id(anno), None):
+        non_builtin_types.append(anno)
+      elif (anno in self._IMMUTABLE_TYPES or anno in typing.__dict__.values() or
+            anno is Ellipsis):
+        continue
+      elif hasattr(anno, '__args__'):
+        self._extract_non_builtin_types(anno, non_builtin_types)
+      else:
+        non_builtin_types.append(anno)
+    return non_builtin_types
+
+  def _get_non_builtin_ast_types(self, ast_typehint: str) -> List[str]:
+    """Extracts non-builtin types from a string AST type annotation.
+
+    If the type is an inbuilt type or an `...`(Ellipsis) then its skipped.
+
+    Args:
+      ast_typehint: AST extracted type annotation.
+
+    Returns:
+      List of non-builtin ast types.
+    """
+
+    non_builtin_ast_types = []
+    for single_type, _ in self._INDIVIDUAL_TYPES_RE.findall(ast_typehint):
+      if (not single_type or single_type in self._TYPING or
+          single_type == '...'):
+        continue
+      non_builtin_ast_types.append(single_type)
+    return non_builtin_ast_types
+
+  def _linkify(self, non_builtin_map: Dict[str, Any], match) -> str:
+    """Links off to types that can be linked.
+
+    Args:
+      non_builtin_map: Dictionary mapping non-builtin_ast_types to
+        non_builtin_type_objs
+      match: Match object returned by `re.sub`.
+
+    Returns:
+      Linked type annotation if the type annotation object exists.
+    """
+
+    group = match.groupdict()
+    ast_single_typehint = group['single_type']
+
+    # If the AST type hint is a built-in type hint or an `Ellipsis`,
+    # return it as is.
+    if ast_single_typehint not in non_builtin_map:
+      return ast_single_typehint
+
+    if not non_builtin_map:
+      return ast_single_typehint
+
+    # Get the type object from the ast_single_typehint and lookup the object
+    # in reverse_index to get its full name.
+    obj_full_name = self._reverse_index.get(
+        id(non_builtin_map[ast_single_typehint]), None)
+    if obj_full_name is None:
+      return ast_single_typehint
+
+    return self._get_link(obj_full_name, ast_single_typehint)
+
+  def _preprocess(self, ast_typehint: str, obj_anno: Any) -> str:
+    """Links type annotations to its page if it exists.
+
+    Args:
+      ast_typehint: AST extracted type annotation.
+      obj_anno: Type annotation object.
+
+    Returns:
+      Linked type annotation if the type annotation object exists.
+    """
+    # If the object annotations exists in the reverse_index, get the link
+    # directly for the entire annotation.
+    obj_anno_full_name = self._reverse_index.get(id(obj_anno), None)
+    if obj_anno_full_name is not None:
+      return self._get_link(obj_anno_full_name, ast_typehint)
+
+    non_builtin_ast_types = self._get_non_builtin_ast_types(ast_typehint)
+    try:
+      non_builtin_type_objs = self._extract_non_builtin_types(obj_anno, [])
+    except RecursionError:
+      non_builtin_type_objs = {}
+
+    # If the length doesn't match then don't linkify any type annotation. This
+    # is done to avoid linking to wrong pages instead of guessing.
+    if len(non_builtin_type_objs) != len(non_builtin_ast_types):
+      non_builtin_map = {}
+    else:
+      non_builtin_map = dict(zip(non_builtin_ast_types, non_builtin_type_objs))
+
+    partial_func = functools.partial(self._linkify, non_builtin_map)
+    return self._INDIVIDUAL_TYPES_RE.sub(partial_func, ast_typehint)
 
   def _replace_internal_names(self, default_text: str) -> str:
     full_name_re = f'^{self._IDENTIFIER_RE}(.{self._IDENTIFIER_RE})+'
@@ -923,6 +1192,9 @@ class FormatArguments(object):
         if match.group(0).startswith(internal_name):
           return public_name + default_text[len(internal_name):]
     return default_text
+
+  def format_return(self, return_anno: Any) -> str:
+    return self._preprocess(self._type_annotations['return'], return_anno)
 
   def format_args(self, args: List[inspect.Parameter]) -> List[str]:
     """Creates a text representation of the args in a method/function.
@@ -934,17 +1206,18 @@ class FormatArguments(object):
       Formatted args with type annotations if they exist.
     """
 
-    args_text_representation = []
+    args_text_repr = []
 
     for arg in args:
       arg_name = arg.name
       if arg_name in self._type_annotations:
-        args_text_representation.append(
-            f'{arg_name}: {self._type_annotations[arg_name]}')
+        typeanno = self._preprocess(self._type_annotations[arg_name],
+                                    arg.annotation)
+        args_text_repr.append(f'{arg_name}: {typeanno}')
       else:
-        args_text_representation.append(f'{arg_name}')
+        args_text_repr.append(f'{arg_name}')
 
-    return args_text_representation
+    return args_text_repr
 
   def format_kwargs(self, kwargs: List[inspect.Parameter],
                     ast_defaults: List[str]) -> List[str]:
@@ -958,7 +1231,7 @@ class FormatArguments(object):
       Formatted kwargs with type annotations if they exist.
     """
 
-    kwargs_text_representation = []
+    kwargs_text_repr = []
 
     if len(ast_defaults) < len(kwargs):
       ast_defaults.extend([None] * (len(kwargs) - len(ast_defaults)))
@@ -975,7 +1248,7 @@ class FormatArguments(object):
           default_text = self._replace_internal_names(default_text)
       # Kwarg without default value.
       elif default_val is kwarg.empty:
-        kwargs_text_representation.extend(self.format_args([kwarg]))
+        kwargs_text_repr.extend(self.format_args([kwarg]))
         continue
       else:
         # Strip object memory addresses to avoid unnecessary doc churn.
@@ -984,12 +1257,13 @@ class FormatArguments(object):
 
       # Format the kwargs to add the type annotation and default values.
       if kname in self._type_annotations:
-        kwargs_text_representation.append(
-            f'{kname}: {self._type_annotations[kname]} = {default_text}')
+        typeanno = self._preprocess(self._type_annotations[kname],
+                                    kwarg.annotation)
+        kwargs_text_repr.append(f'{kname}: {typeanno} = {default_text}')
       else:
-        kwargs_text_representation.append(f'{kname}={default_text}')
+        kwargs_text_repr.append(f'{kname}={default_text}')
 
-    return kwargs_text_representation
+    return kwargs_text_repr
 
 
 class _SignatureComponents(NamedTuple):
@@ -1018,8 +1292,8 @@ class _SignatureComponents(NamedTuple):
     return full_signature
 
 
-def _generate_signature(func: Any,
-                        reverse_index: Dict[int, str]) -> _SignatureComponents:
+def generate_signature(func: Any, parser_config: ParserConfig,
+                       func_full_name: str) -> _SignatureComponents:
   """Given a function, returns a list of strings representing its args.
 
   This function uses `__name__` for callables if it is available. This can lead
@@ -1030,7 +1304,9 @@ def _generate_signature(func: Any,
 
   Args:
     func: A function, method, or functools.partial to extract the signature for.
-    reverse_index: A map from object ids to canonical full names to use.
+    parser_config: `ParserConfig` for the method/function whose signature is
+      generated.
+    func_full_name: The full name of a function whose signature is generated.
 
   Returns:
     A `_SignatureComponents` NamedTuple.
@@ -1039,9 +1315,12 @@ def _generate_signature(func: Any,
   all_args_list = []
 
   try:
-    sig_values = inspect.signature(func).parameters.values()
+    sig = inspect.signature(func)
+    sig_values = sig.parameters.values()
+    return_anno = sig.return_annotation
   except (ValueError, TypeError):
     sig_values = []
+    return_anno = None
 
   type_annotation_visitor = TypeAnnotationExtractor()
   ast_defaults_visitor = ASTDefaultValueExtractor()
@@ -1076,7 +1355,7 @@ def _generate_signature(func: Any,
     kind = param.kind
     default = param.default
 
-    if skip_self_cls and (param.name == 'self' or param.name == 'cls'):
+    if skip_self_cls and param.name in ('self', 'cls', '_cls'):
       # Only skip the first parameter. If the function contains both
       # `self` and `cls`, skip only the first one.
       skip_self_cls = False
@@ -1097,7 +1376,8 @@ def _generate_signature(func: Any,
   # Build the text representation of Args and Kwargs.
   #############################################################################
 
-  formatter = FormatArguments(type_annotations, reverse_index)
+  formatter = FormatArguments(
+      type_annotations, parser_config, func_full_name=func_full_name)
 
   if pos_only_args:
     all_args_list.extend(formatter.format_args(pos_only_args))
@@ -1123,11 +1403,17 @@ def _generate_signature(func: Any,
   if varkwargs is not None:
     all_args_list.append('**' + varkwargs.name)
 
+  if return_anno and return_anno is not sig.empty and type_annotations.get(
+      'return', None):
+    return_type = formatter.format_return(return_anno)
+  else:
+    return_type = 'None'
+
   return _SignatureComponents(
       arguments=all_args_list,
       arguments_typehint_exists=arguments_typehint_exists,
       return_typehint_exists=return_typehint_exists,
-      return_type=type_annotations.get('return', None))
+      return_type=return_type)
 
 
 def _get_defining_class(py_class, name):
@@ -1210,7 +1496,7 @@ class PageInfo(object):
     full_name: The full, master name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
-    defined_in: A _FileLocation describing where the object wqas defined.
+    defined_in: A _FileLocation describing where the object was defined.
     aliases: A list of full-name for all aliases for this object.
     doc: A list of objects representing the docstring. These can all be
       converted to markdown using str().
@@ -1233,7 +1519,7 @@ class PageInfo(object):
   @property
   def short_name(self):
     """Returns the documented object's short name."""
-    return self._full_name.split('.')[-1]
+    return self.full_name.split('.')[-1]
 
   @property
   def defined_in(self):
@@ -1281,11 +1567,11 @@ class FunctionPageInfo(PageInfo):
     full_name: The full, master name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
-    defined_in: A _FileLocation describing where the object wqas defined.
+    defined_in: A _FileLocation describing where the object was defined.
     aliases: A list of full-name for all aliases for this object.
     doc: A list of objects representing the docstring. These can all be
       converted to markdown using str().
-    signature: the parsed signature (see:_generate_signature)
+    signature: the parsed signature (see: generate_signature)
     decorators: A list of decorator names.
   """
 
@@ -1315,8 +1601,8 @@ class FunctionPageInfo(PageInfo):
     """
 
     assert self.signature is None
-    self._signature = _generate_signature(self.py_object,
-                                          parser_config.reverse_index)
+    self._signature = generate_signature(self.py_object, parser_config,
+                                         self.full_name)
     self._decorators = extract_decorators(self.py_object)
 
   @property
@@ -1330,6 +1616,62 @@ class FunctionPageInfo(PageInfo):
     return Metadata(self.full_name).build_html()
 
 
+class TypeAliasPageInfo(PageInfo):
+  """Collects docs For a type alias page.
+
+  Attributes:
+    full_name: The full, master name, of the object being documented.
+    short_name: The last part of the full name.
+    py_object: The object being documented.
+    defined_in: A _FileLocation describing where the object was defined.
+    aliases: A list of full-name for all aliases for this object.
+    doc: A list of objects representing the docstring. These can all be
+      converted to markdown using str().
+    signature: the parsed signature (see: generate_signature)
+    decorators: A list of decorator names.
+  """
+
+  def __init__(self, full_name: str, py_object: Any) -> None:
+    """Initialize a `TypeAliasPageInfo`.
+
+    Args:
+      full_name: The full, master name, of the object being documented.
+      py_object: The object being documented.
+    """
+
+    super().__init__(full_name, py_object)
+    self._signature = None
+
+  @property
+  def signature(self) -> None:
+    return self._signature
+
+  def set_doc(self, doc: _DocstringInfo) -> None:
+    """Overrides base class's method and sets the `doc` field."""
+    self._doc = _DocstringInfo(
+        brief='This symbol is a Type Alias.',
+        docstring_parts=[],
+        compatibility={})
+
+  def collect_docs(self, parser_config) -> None:
+    """Collect all information necessary to genertate the function page.
+
+    Mainly this is details about the function signature.
+
+    Args:
+      parser_config: The ParserConfig for the module being documented.
+    """
+    del parser_config
+
+    assert self.signature is None
+    wrapped_sig = textwrap.fill(
+        repr(self.py_object).replace('typing.', ''), width=80)
+    self._signature = textwrap.indent(wrapped_sig, '    ').strip()
+
+  def get_metadata_html(self) -> str:
+    return Metadata(self.full_name).build_html()
+
+
 class ClassPageInfo(PageInfo):
   """Collects docs for a class page.
 
@@ -1337,7 +1679,7 @@ class ClassPageInfo(PageInfo):
     full_name: The full, master name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
-    defined_in: A _FileLocation describing where the object wqas defined.
+    defined_in: A _FileLocation describing where the object was defined.
     aliases: A list of full-name for all aliases for this object.
     doc: A list of objects representing the docstring. These can all be
       converted to markdown using str().
@@ -1347,8 +1689,10 @@ class ClassPageInfo(PageInfo):
     methods: A list of `MethodInfo` objects documenting the class' methods.
     classes: A list of `MemberInfo` objects pointing to docs for any nested
       classes.
-    other_members: A list of `MemberInfo` objects documenting any other
-      object's defined inside the class object (mostly enum style fields).
+    other_members: A list of `MemberInfo` objects documenting any other object's
+      defined inside the class object (mostly enum style fields).
+    attr_block: A `TitleBlock` containing information about the Attributes of
+      the class.
   """
 
   def __init__(self, full_name, py_object):
@@ -1372,11 +1716,16 @@ class ClassPageInfo(PageInfo):
     self._methods = []
     self._classes = []
     self._other_members = []
+    self.attr_block = None
 
   @property
   def bases(self):
     """Returns a list of `MemberInfo` objects pointing to the class' parents."""
     return self._bases
+
+  def set_attr_block(self, attr_block):
+    assert self.attr_block is None
+    self.attr_block = attr_block
 
   def _set_bases(self, relative_path, parser_config):
     """Builds the `bases` attribute, to document this class' parent-classes.
@@ -1470,8 +1819,8 @@ class ClassPageInfo(PageInfo):
         member_info.short_name in ['__del__', '__copy__']):
       return
 
-    signature = _generate_signature(member_info.obj,
-                                    parser_config.reverse_index)
+    signature = generate_signature(member_info.obj, parser_config,
+                                   member_info.full_name)
 
     decorators = extract_decorators(member_info.obj)
 
@@ -1518,7 +1867,8 @@ class ClassPageInfo(PageInfo):
       self,
       member_info: MemberInfo,
       defining_class: Optional[type],  # pylint: disable=g-bare-generic
-      parser_config: ParserConfig) -> None:
+      parser_config: ParserConfig,
+  ) -> None:
     """Adds a member to the class page."""
     obj_type = get_obj_type(member_info.obj)
 
@@ -1581,12 +1931,14 @@ class ClassPageInfo(PageInfo):
                                child_doc, child_url)
       self._add_member(member_info, defining_class, parser_config)
 
-    self._augment_attributes_inplace(self.doc.docstring_parts)
+    self.set_attr_block(self._augment_attributes(self.doc.docstring_parts))
 
-  def _augment_attributes_inplace(self, docstring_parts: List[Any]) -> None:
-    """Augments the "Attr" block of the docstring.
+  def _augment_attributes(self,
+                          docstring_parts: List[Any]) -> Optional[TitleBlock]:
+    """Augments and deletes the "Attr" block of the docstring.
 
-    The block is added to the end if it is not found.
+    The augmented block is returned and then added to the markdown page by
+    pretty_docs.py. The existing Attribute block is deleted from the docstring.
 
     Merges `namedtuple` fields and properties into the attrs block.
 
@@ -1595,13 +1947,21 @@ class ClassPageInfo(PageInfo):
     + Then any `properties` not mentioned above.
 
     Args:
-      docstring_parts: A list of docstring parts. Edited in-place.
+      docstring_parts: A list of docstring parts.
+
+    Returns:
+      Augmented "Attr" block.
     """
+
+    attribute_block = None
+
     for attr_block_index, part in enumerate(docstring_parts):
       if isinstance(part, TitleBlock) and part.title.startswith('Attr'):
         raw_attrs = collections.OrderedDict(part.items)
         break
     else:
+      # Didn't find the attributes block, there may still be attributes so
+      # add a placeholder for them at the end.
       raw_attrs = collections.OrderedDict()
       attr_block_index = len(docstring_parts)
       docstring_parts.append(None)
@@ -1617,10 +1977,13 @@ class ClassPageInfo(PageInfo):
       attrs.setdefault(name, desc)
 
     if attrs:
-      docstring_parts[attr_block_index] = TitleBlock(
+      attribute_block = TitleBlock(
           title='Attributes', text='', items=attrs.items())
-    else:
-      del docstring_parts[attr_block_index]
+
+    # Delete the Attrs block if it exists or delete the placeholder.
+    del docstring_parts[attr_block_index]
+
+    return attribute_block
 
 
 class ModulePageInfo(PageInfo):
@@ -1630,7 +1993,7 @@ class ModulePageInfo(PageInfo):
     full_name: The full, master name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
-    defined_in: A _FileLocation describing where the object wqas defined.
+    defined_in: A _FileLocation describing where the object was defined.
     aliases: A list of full-name for all aliases for this object.
     doc: A list of objects representing the docstring. These can all be
       converted to markdown using str().
@@ -1640,8 +2003,10 @@ class ModulePageInfo(PageInfo):
       in this module
     modules: A list of `MemberInfo` objects pointing to docs for the modules in
       this module.
-    other_members: A list of `MemberInfo` objects documenting any other
-      object's defined on the module object (mostly enum style fields).
+    type_alias: A list of `MemberInfo` objects pointing to docs for the type
+      aliases in this module.
+    other_members: A list of `MemberInfo` objects documenting any other object's
+      defined on the module object (mostly enum style fields).
   """
 
   def __init__(self, full_name, py_object):
@@ -1657,31 +2022,39 @@ class ModulePageInfo(PageInfo):
     self._classes = []
     self._functions = []
     self._other_members = []
+    self._type_alias = []
 
   @property
   def modules(self):
     return self._modules
 
-  def _add_module(self, member_info: MemberInfo):
-    self._modules.append(member_info)
+  @property
+  def functions(self):
+    return self._functions
 
   @property
   def classes(self):
     return self._classes
 
-  def _add_class(self, member_info: MemberInfo):
-    self._classes.append(member_info)
-
   @property
-  def functions(self):
-    return self._functions
-
-  def _add_function(self, member_info: MemberInfo):
-    self._functions.append(member_info)
+  def type_alias(self):
+    return self._type_alias
 
   @property
   def other_members(self):
     return self._other_members
+
+  def _add_module(self, member_info: MemberInfo):
+    self._modules.append(member_info)
+
+  def _add_class(self, member_info: MemberInfo):
+    self._classes.append(member_info)
+
+  def _add_function(self, member_info: MemberInfo):
+    self._functions.append(member_info)
+
+  def _add_type_alias(self, member_info: MemberInfo):
+    self._type_alias.append(member_info)
 
   def _add_other_member(self, member_info: MemberInfo):
     self._other_members.append(member_info)
@@ -1697,6 +2070,7 @@ class ModulePageInfo(PageInfo):
     return meta_data.build_html()
 
   def _add_member(self, member_info: MemberInfo) -> None:
+    """Adds members of the modules to the respective lists."""
     obj_type = get_obj_type(member_info.obj)
     if obj_type is ObjType.MODULE:
       self._add_module(member_info)
@@ -1704,6 +2078,8 @@ class ModulePageInfo(PageInfo):
       self._add_class(member_info)
     elif obj_type is ObjType.CALLABLE:
       self._add_function(member_info)
+    elif obj_type is ObjType.TYPE_ALIAS:
+      self._add_type_alias(member_info)
     else:
       self._add_other_member(member_info)
 
@@ -1768,7 +2144,7 @@ def docs_for_object(full_name, py_object, parser_config):
     parser_config: A ParserConfig object.
 
   Returns:
-    Either a `_FunctionPageInfo`, `_ClassPageInfo`, or a `_ModulePageInfo`
+    Either a `FunctionPageInfo`, `ClassPageInfo`, or a `ModulePageInfo`
     depending on the type of the python object being documented.
 
   Raises:
@@ -1789,6 +2165,8 @@ def docs_for_object(full_name, py_object, parser_config):
     page_info = FunctionPageInfo(master_name, py_object)
   elif obj_type is ObjType.MODULE:
     page_info = ModulePageInfo(master_name, py_object)
+  elif obj_type is ObjType.TYPE_ALIAS:
+    page_info = TypeAliasPageInfo(master_name, py_object)
   else:
     raise RuntimeError('Cannot make docs for object {full_name}: {py_object!r}')
 
@@ -1940,7 +2318,8 @@ def generate_global_index(library_name, index, reference_resolver):
 
   for symbol, link in symbol_links:
     if symbol.startswith('tf.compat.v1'):
-      compat_v1_symbol_links.append(link)
+      if 'raw_ops' not in symbol:
+        compat_v1_symbol_links.append(link)
     elif symbol.startswith('tf.compat.v2'):
       compat_v2_symbol_links.append(link)
     else:

@@ -108,11 +108,12 @@ branches.
 
 ### Simple changes
 
-The easiest way to make straightforward documentation updates and fixes is to
-use GitHub's
-<a href="https://help.github.com/en/articles/editing-files-in-your-repository" class="external">web-based file editor</a>.
-Browse the [tensorflow/docs](https://github.com/tensorflow/docs/tree/master/site/en)
-repository to find the Markdown or notebook file that roughly corresponds to the
+The easiest way to make straightforward documentation updates to Markdown files
+is to use GitHub's
+<a href="https://help.github.com/en/articles/editing-files-in-your-repository" class="external">web-based
+file editor</a>. Browse the
+[tensorflow/docs](https://github.com/tensorflow/docs/tree/master/site/en)
+repository to find the Markdown that roughly corresponds to the
 <a href="https://www.tensorflow.org">tensorflow.org</a> URL structure. In the
 upper right corner of the file view, click the pencil icon
 <svg version="1.1" width="14" height="16" viewBox="0 0 14 16" class="octicon octicon-pencil" aria-hidden="true"><path fill-rule="evenodd" d="M0 12v3h3l8-8-3-3-8 8zm3 2H1v-2h1v1h1v1zm10.3-9.3L12 6 9 3l1.3-1.3a.996.996 0 0 1 1.41 0l1.59 1.59c.39.39.39 1.02 0 1.41z"></path></svg>
@@ -256,15 +257,47 @@ is a hosted notebook environment that makes it easy to edit—and run—notebook
 documentation. Notebooks in GitHub are loaded in Google Colab by passing the
 path to the Colab URL, for example,
 the notebook located in GitHub here:
-<a href="https://   &#103;ithub.com/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb">https://  &#103;ithub.com/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb</a><br/>
+<a href="https://&#103;ithub.com/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb">https://&#103;ithub.com/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb</a><br/>
 can be loaded into Google Colab at this URL:
 <a href="https://colab.research.google.com/github/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb">https://colab.research.google.com/github/tensorflow/docs/blob/master/site/en/tutorials/keras/classification.ipynb</a>
+<!-- github.com path intentionally formatted to hide from import script. -->
 
 There is an
 <a href="https://chrome.google.com/webstore/detail/open-in-colab/iogfkhleblhcpcekbiedikdehleodpjo" class="external">Open in Colab</a>
 Chrome extension that performs this URL substitution when browsing a notebook on
 GitHub. This is useful when opening a notebook in your repo fork, because the
 top buttons always link to the TensorFlow Docs `master` branch.
+
+### Notebook formatting
+
+To create a new notebook, copy and edit the
+<a href="https://github.com/tensorflow/docs/blob/master/tools/templates/notebook.ipynb" external="class">TensorFlow
+notebook template</a>.
+
+Notebooks are stored on disk as JSON and the various notebook implementations
+format the JSON differently. Diff tools and version control don't handle this
+very well, so TensorFlow Docs enforces a standard notebook formatting.
+
+The
+[nbfmt.py](https://github.com/tensorflow/docs/blob/master/tools/nbfmt.py)
+script applies this formatting:
+
+```
+# Run it on a single file
+python nbfmt.py path/to/notebooks/example.ipynb
+
+# Run  it on a whole directory
+python nbfmt.py path/to/notebooks/
+```
+
+For the same reasons notebook output should be cleared before submission
+(except in a few special cases). In Colab the "private outputs" option is used
+to enforce this. Other notebook implementations do not recognize this option.
+You can clear the outputs by passing `--preserve_outputs=False` to `nbfmt`:
+
+```
+python nbfmt.py --preserve_outputs=False path/to/notebooks/example.ipynb
+```
 
 ### Edit in Colab
 
@@ -353,7 +386,7 @@ tool for the translated notebooks:
 <code class="devsite-terminal">./tools/nb_code_sync.py [--lang=en] site/<var>lang</var>/notebook.ipynb</code>
 </pre>
 
-This script reads the code cells of a language notebook and check it against the
+This script reads the code cells of a language notebook and checks it against the
 English version. After stripping the comments, it compares the code blocks and
 updates the language notebook if they are different. This tool is particularly
 useful with an interactive git workflow to selectively add hunks of the file to

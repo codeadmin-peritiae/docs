@@ -21,7 +21,6 @@ import inspect
 import os
 import pathlib
 import shutil
-import subprocess
 import tempfile
 
 
@@ -416,7 +415,8 @@ def write_docs(output_dir,
                root_title='TensorFlow',
                search_hints=True,
                site_path='api_docs/python',
-               gen_redirects=True):
+               gen_redirects=True,
+               table_view=True):
   """Write previously extracted docs to disk.
 
   Write a docs page for each symbol included in the indices of parser_config to
@@ -438,6 +438,9 @@ def write_docs(output_dir,
       `_toc.yaml` and `_redirects.yaml` files.
     gen_redirects: Bool which decides whether to generate _redirects.yaml
         file or not.
+    table_view: If True, `Args`, `Returns`, `Raises` or `Attributes` will be
+        converted to a tabular format while generating markdown.
+        If False, they will be converted to a markdown List view.
 
   Raises:
     ValueError: if `output_dir` is not an absolute path
@@ -513,7 +516,7 @@ def write_docs(output_dir,
       else:
         content = ['robots: noindex\n']
 
-      content.append(pretty_docs.build_md_page(page_info))
+      content.append(pretty_docs.build_md_page(page_info, table_view))
       text = '\n'.join(content)
       path.write_text(text, encoding='utf-8')
     except OSError:
@@ -724,7 +727,8 @@ class DocGenerator(object):
                api_cache=True,
                callbacks=None,
                yaml_toc=True,
-               gen_redirects=True):
+               gen_redirects=True,
+               table_view=True):
     """Creates a doc-generator.
 
     Args:
@@ -754,6 +758,9 @@ class DocGenerator(object):
       yaml_toc: Bool which decides whether to generate _toc.yaml file or not.
       gen_redirects: Bool which decides whether to generate _redirects.yaml
         file or not.
+      table_view: If True, `Args`, `Returns`, `Raises` or `Attributes` will be
+        converted to a tabular format while generating markdown.
+        If False, they will be converted to a markdown List view.
     """
     self._root_title = root_title
     self._py_modules = py_modules
@@ -761,7 +768,12 @@ class DocGenerator(object):
     self._py_module = py_modules[0][1]
 
     if base_dir is None:
-      base_dir = os.path.dirname(self._py_module.__file__)
+      # If the user passes a single-file module, only document code defined in
+      # that file.
+      base_dir = self._py_module.__file__
+      if base_dir.endswith('__init__.py'):
+        # If they passed a package, document anything defined in that directory.
+        base_dir = os.path.dirname(base_dir)
     if isinstance(base_dir, str):
       base_dir = (base_dir,)
     self._base_dir = tuple(base_dir)
@@ -789,6 +801,7 @@ class DocGenerator(object):
     self._callbacks = callbacks
     self._yaml_toc = yaml_toc
     self._gen_redirects = gen_redirects
+    self._table_view = table_view
 
   def make_reference_resolver(self, visitor):
     return parser.ReferenceResolver.from_visitor(
@@ -850,7 +863,8 @@ class DocGenerator(object):
         root_title=self._root_title,
         search_hints=self._search_hints,
         site_path=self._site_path,
-        gen_redirects=self._gen_redirects)
+        gen_redirects=self._gen_redirects,
+        table_view=self._table_view)
 
     if self.api_cache:
       reference_resolver.to_json_file(
@@ -862,7 +876,24 @@ class DocGenerator(object):
       if e.strerror != 'File exists':
         raise
 
-    subprocess.check_call([
-        'rsync', '--recursive', '--quiet', '--delete', f'{work_py_dir}/',
-        output_dir
-    ])
+    # Typical results are something like:
+    #
+    # out_dir/
+    #    {short_name}/
+    #    _redirects.yaml
+    #    _toc.yaml
+    #    index.md
+    #    {short_name}.md
+    #
+    # Copy the top level files to the `{output_dir}/`, delete and replace the
+    # `{output_dir}/{short_name}/` directory.
+
+    for work_path in work_py_dir.glob('*'):
+      out_path = pathlib.Path(output_dir) / work_path.name
+      out_path.parent.mkdir(exist_ok=True, parents=True)
+
+      if work_path.is_file():
+        shutil.copy2(work_path, out_path)
+      elif work_path.is_dir():
+        shutil.rmtree(out_path, ignore_errors=True)
+        shutil.copytree(work_path, out_path)
