@@ -15,12 +15,11 @@
 # ==============================================================================
 r"""Format notebooks using the TensorFlow docs style.
 
-Install dependencies:
-$ pip3 install -U [--user] absl-py
+Install the tensorflow-docs package:
+$ python3 -m pip install -U [--user] git+https://github.com/tensorflow/docs
 
 Usage:
-$ nbfmt.py [options] notebook.ipynb [...]
-$ find . -name "*\.ipynb" | xargs ./tools/nbfmt.py
+$ python3 -m tensorflow_docs.tools.nbfmt [options] notebook.ipynb [...]
 
 See the TensorFlow notebook template:
 https://github.com/tensorflow/docs/blob/master/tools/templates/notebook.ipynb
@@ -139,6 +138,10 @@ def clean_cells(data) -> None:
     if cell.get("outputs", None) is None:
       cell["outputs"] = []
 
+    # Spec allows null or integer, but use null since it's the Colab default.
+    if cell.get("execution_count") == 0:
+      cell["execution_count"] = None
+
   if has_outputs:
     warn("Removed the existing output cells.")
 
@@ -159,10 +162,22 @@ def update_metadata(data: Dict[str, Any],
 
   colab["provenance"] = []
   colab["toc_visible"] = True
-  # Always remove "last_runtime".
-  colab.pop("last_runtime", None)
-
+  colab.pop("last_runtime", None)  # Always remove "last_runtime".
   metadata["colab"] = colab
+
+  # kernelspec: name: display_name
+  supported_kernels = {"python3": "Python 3", "swift": "Swift"}
+  kernel_name = metadata.get("kernelspec", {}).get("name")
+
+  if kernel_name not in supported_kernels:
+    kernel_name = "python3"  # Notebook defaults to Python3 (same as Colab).
+
+  # Use new dict to clear any other attributes.
+  metadata["kernelspec"] = {
+      "name": kernel_name,
+      "display_name": supported_kernels[kernel_name]
+  }
+
   data["metadata"] = metadata
 
 
@@ -201,7 +216,7 @@ def main(argv):
       files.extend(path.rglob("*.ipynb"))
     else:
       found_error = True
-      warn(f"Bad arg: {str(path)}")
+      warn(f"Invalid file or directory: {str(path)}")
 
   for fp in files:
     print(f"Notebook: {fp}", file=sys.stderr)
@@ -255,7 +270,9 @@ def main(argv):
       error_template = textwrap.dedent("""
       [test] The following notebooks are not formatted:
       {notebooks}
-      Format with: nbfmt.py notebook.ipynb [...]
+      Please install `nbfmt` and format:
+      $ python3 -m pip install -U --user git+https://github.com/tensorflow/docs
+      $ python3 -m tensorflow_docs.tools.nbfmt notebook.ipynb
       """)
       notebooks = "\n".join([f"- {str(fp)}" for fp in test_fail_notebooks])
       print(error_template.format(notebooks=notebooks), file=sys.stderr)

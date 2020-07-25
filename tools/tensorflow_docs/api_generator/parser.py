@@ -111,10 +111,10 @@ class _FileLocation(object):
     self.start_line = start_line
     self.end_line = end_line
 
-    github_master_re = 'github.com.*?(blob|tree)/master'
+    github_main_re = 'github.com.*?(blob|tree)/master'
     suffix = ''
-    # Only attach a line number for github URLs that are not using "master"
-    if self.start_line and not re.search(github_master_re, self.url):
+    # Only attach a line number for github URLs that are not using "main"
+    if self.start_line and not re.search(github_main_re, self.url):
       if 'github.com' in self.url:
         suffix = self.GITHUB_LINE_NUMBER_TEMPLATE.format(
             start_line=self.start_line, end_line=self.end_line)
@@ -452,7 +452,9 @@ class ReferenceResolver(object):
     filters = [
         IgnoreLineInBlock('<pre class="tfo-notebook-code-cell-output">',
                           '</pre>'),
-        IgnoreLineInBlock('```', '```')
+        IgnoreLineInBlock('```', '```'),
+        IgnoreLineInBlock(
+            '<pre class="devsite-click-to-copy prettyprint lang-py">', '</pre>')
     ]
 
     for line in string.splitlines():
@@ -500,8 +502,8 @@ class ReferenceResolver(object):
     code_re = '`(.*?)`'
     return re.sub(code_re, r'<code>\1</code>', link_text)
 
-  def py_master_name(self, full_name):
-    """Return the master name for a Python symbol name."""
+  def py_main_name(self, full_name):
+    """Return the main name for a Python symbol name."""
     return self._duplicate_of.get(full_name, full_name)
 
   def reference_to_url(self, ref_full_name, relative_path_to_root):
@@ -530,18 +532,18 @@ class ReferenceResolver(object):
     """
     if self._is_fragment.get(ref_full_name, False):
       # methods and constants get duplicated. And that's okay.
-      # Use the master name of their parent.
+      # Use the main name of their parent.
       parent_name, short_name = ref_full_name.rsplit('.', 1)
-      parent_master_name = self._duplicate_of.get(parent_name, parent_name)
-      master_name = '.'.join([parent_master_name, short_name])
+      parent_main_name = self._duplicate_of.get(parent_name, parent_name)
+      main_name = '.'.join([parent_main_name, short_name])
     else:
-      master_name = self._duplicate_of.get(ref_full_name, ref_full_name)
+      main_name = self._duplicate_of.get(ref_full_name, ref_full_name)
 
     # Check whether this link exists
-    if master_name not in self._all_names:
-      raise TFDocsError(f'Cannot make link to {master_name!r}: Not in index.')
+    if main_name not in self._all_names:
+      raise TFDocsError(f'Cannot make link to {main_name!r}: Not in index.')
 
-    ref_path = documentation_path(master_name, self._is_fragment[master_name])
+    ref_path = documentation_path(main_name, self._is_fragment[main_name])
     return os.path.join(relative_path_to_root, ref_path)
 
   def _one_ref(self, match, relative_path_to_root, full_name=None):
@@ -1037,40 +1039,17 @@ class FormatArguments(object):
     self._is_fragment = self._reference_resolver._is_fragment.get(
         self._func_full_name, None)
 
-  def _calc_relative_path(self, single_type: str) -> str:
-    """Calculates the relative path of the type from the function.
+  def get_link(self, obj_full_name: str) -> str:
+    relative_path_to_root = os.path.relpath(
+        path='.',
+        start=os.path.dirname(
+            documentation_path(self._func_full_name, self._is_fragment)) or '.')
 
-    The number of `..` are counted from `os.path.relpath` and adjusted based
-    on if the function (for which signature is being generated) is a fragment
-    or not.
-
-    Args:
-      single_type: The type for which the relative path is calculated.
-
-    Returns:
-      Relative path consisting of only `..` as a path.
-    """
-
-    func_full_path = self._func_full_name.replace('.', '/')
-    single_type = single_type.replace('.', '/')
-
-    dot_count = os.path.relpath(single_type, func_full_path).count('..')
-    # Methods are fragments, stand-alone functions are not.
-    if self._is_fragment:
-      dot_count -= 2
-    else:
-      dot_count -= 1
-
-    dot_list = ['..'] * dot_count
-    return os.path.join(*dot_list)  # pylint: disable=no-value-for-parameter
-
-  def _get_link(self, full_name: str, ast_typehint: str) -> str:
-    full_name = self._reference_resolver._duplicate_of.get(full_name, full_name)  # pylint: disable=protected-access
-    relative_path = self._calc_relative_path(ast_typehint)
-    url = os.path.join(relative_path, full_name.replace('.', '/')) + '.md'
-    # Use `full_name` for the text in the link since its available over
-    # `ast_typehint`.
-    return f'<a href="{url}"><code>{full_name}</code></a>'
+    return self._reference_resolver.python_link(
+        link_text=obj_full_name,
+        ref_full_name=obj_full_name,
+        relative_path_to_root=relative_path_to_root,
+        code_ref=True)
 
   def _extract_non_builtin_types(self, arg_obj: Any,
                                  non_builtin_types: List[Any]) -> List[Any]:
@@ -1153,9 +1132,9 @@ class FormatArguments(object):
     if obj_full_name is None:
       return ast_single_typehint
 
-    return self._get_link(obj_full_name, ast_single_typehint)
+    return self.get_link(obj_full_name)
 
-  def _preprocess(self, ast_typehint: str, obj_anno: Any) -> str:
+  def preprocess(self, ast_typehint: str, obj_anno: Any) -> str:
     """Links type annotations to its page if it exists.
 
     Args:
@@ -1169,7 +1148,7 @@ class FormatArguments(object):
     # directly for the entire annotation.
     obj_anno_full_name = self._reverse_index.get(id(obj_anno), None)
     if obj_anno_full_name is not None:
-      return self._get_link(obj_anno_full_name, ast_typehint)
+      return self.get_link(obj_anno_full_name)
 
     non_builtin_ast_types = self._get_non_builtin_ast_types(ast_typehint)
     try:
@@ -1197,7 +1176,7 @@ class FormatArguments(object):
     return default_text
 
   def format_return(self, return_anno: Any) -> str:
-    return self._preprocess(self._type_annotations['return'], return_anno)
+    return self.preprocess(self._type_annotations['return'], return_anno)
 
   def format_args(self, args: List[inspect.Parameter]) -> List[str]:
     """Creates a text representation of the args in a method/function.
@@ -1214,8 +1193,8 @@ class FormatArguments(object):
     for arg in args:
       arg_name = arg.name
       if arg_name in self._type_annotations:
-        typeanno = self._preprocess(self._type_annotations[arg_name],
-                                    arg.annotation)
+        typeanno = self.preprocess(self._type_annotations[arg_name],
+                                   arg.annotation)
         args_text_repr.append(f'{arg_name}: {typeanno}')
       else:
         args_text_repr.append(f'{arg_name}')
@@ -1260,8 +1239,8 @@ class FormatArguments(object):
 
       # Format the kwargs to add the type annotation and default values.
       if kname in self._type_annotations:
-        typeanno = self._preprocess(self._type_annotations[kname],
-                                    kwarg.annotation)
+        typeanno = self.preprocess(self._type_annotations[kname],
+                                   kwarg.annotation)
         kwargs_text_repr.append(f'{kname}: {typeanno} = {default_text}')
       else:
         kwargs_text_repr.append(f'{kname}={default_text}')
@@ -1496,7 +1475,7 @@ class PageInfo(object):
   Converted to markdown by pretty_docs.py.
 
   Attributes:
-    full_name: The full, master name, of the object being documented.
+    full_name: The full, main name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
     defined_in: A _FileLocation describing where the object was defined.
@@ -1509,7 +1488,7 @@ class PageInfo(object):
     """Initialize a PageInfo.
 
     Args:
-      full_name: The full, master name, of the object being documented.
+      full_name: The full, main name, of the object being documented.
       py_object: The object being documented.
     """
     self.full_name = full_name
@@ -1567,7 +1546,7 @@ class FunctionPageInfo(PageInfo):
   """Collects docs For a function Page.
 
   Attributes:
-    full_name: The full, master name, of the object being documented.
+    full_name: The full, main name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
     defined_in: A _FileLocation describing where the object was defined.
@@ -1582,7 +1561,7 @@ class FunctionPageInfo(PageInfo):
     """Initialize a FunctionPageInfo.
 
     Args:
-      full_name: The full, master name, of the object being documented.
+      full_name: The full, main name, of the object being documented.
       py_object: The object being documented.
     """
     super(FunctionPageInfo, self).__init__(full_name, py_object)
@@ -1623,7 +1602,7 @@ class TypeAliasPageInfo(PageInfo):
   """Collects docs For a type alias page.
 
   Attributes:
-    full_name: The full, master name, of the object being documented.
+    full_name: The full, main name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
     defined_in: A _FileLocation describing where the object was defined.
@@ -1638,7 +1617,7 @@ class TypeAliasPageInfo(PageInfo):
     """Initialize a `TypeAliasPageInfo`.
 
     Args:
-      full_name: The full, master name, of the object being documented.
+      full_name: The full, main name, of the object being documented.
       py_object: The object being documented.
     """
 
@@ -1649,20 +1628,91 @@ class TypeAliasPageInfo(PageInfo):
   def signature(self) -> None:
     return self._signature
 
+  def _custom_join(self, args: List[str], origin: str) -> str:
+    """Custom join for Callable and other type hints.
+
+    Args:
+      args: Args of a type annotation object returned by `__args__`.
+      origin: Origin of a type annotation object returned by `__origin__`.
+
+    Returns:
+      A joined string containing the right representation of a type annotation.
+    """
+    if 'Callable' in origin:
+      if args[0] == '...':
+        return ', '.join(args)
+      else:
+        return f"[{', '.join(args[:-1])}], {args[-1]}"
+
+    return ', '.join(args)
+
+  def _link_type_args(self, obj: Any, reverse_index: Dict[int, str],
+                      linker: FormatArguments) -> str:
+    """Recurses into typehint object and links known objects to their pages."""
+    arg_full_name = reverse_index.get(id(obj), None)
+    if arg_full_name is not None:
+      return linker.get_link(arg_full_name)
+
+    result = []
+    if getattr(obj, '__args__', None):
+      for arg in obj.__args__:
+        result.append(self._link_type_args(arg, reverse_index, linker))
+      origin_str = typing._type_repr(obj.__origin__)  # pylint: disable=protected-access # pytype: disable=module-attr
+      result = self._custom_join(result, origin_str)
+      return f'{origin_str}[{result}]'
+    else:
+      return typing._type_repr(obj)  # pylint: disable=protected-access # pytype: disable=module-attr
+
   def collect_docs(self, parser_config) -> None:
     """Collect all information necessary to genertate the function page.
 
     Mainly this is details about the function signature.
 
+    For the type alias signature, the args are extracted and replaced with the
+    full_name if the object is present in `parser_config.reverse_index`. They
+    are also linkified to point to that symbol's page.
+
+    For example (If generating docs for symbols in TF library):
+
+    ```
+    X = Union[int, str, bool, tf.Tensor, np.ndarray]
+    ```
+
+    In this case `tf.Tensor` will get linked to that symbol's page.
+    Note: In the signature `tf.Tensor` is an object, so it will show up as
+    `tensorflow.python.framework.ops.Tensor`. That's why we need to query
+    `parser_config.reverse_index` to get the full_name of the object which will
+    be `tf.Tensor`. Hence the signature will be:
+
+    ```
+    X = Union[int, str, bool, <a href="URL">tf.Tensor</a>, np.ndarray]
+    ```
+
     Args:
       parser_config: The ParserConfig for the module being documented.
     """
-    del parser_config
-
     assert self.signature is None
-    wrapped_sig = textwrap.fill(
-        repr(self.py_object).replace('typing.', ''), width=80)
-    self._signature = textwrap.indent(wrapped_sig, '    ').strip()
+
+    linker = FormatArguments(
+        type_annotations={},
+        parser_config=parser_config,
+        func_full_name=self.full_name)
+
+    sig_args = []
+    if self.py_object.__origin__:
+      for arg_obj in self.py_object.__args__:
+        sig_args.append(
+            self._link_type_args(arg_obj, parser_config.reverse_index, linker))
+
+    sig_args_str = textwrap.indent(',\n'.join(sig_args), '    ')
+    if self.py_object.__origin__:
+      sig = f'{self.py_object.__origin__}[\n{sig_args_str}\n]'
+    else:
+      sig = repr(self.py_object)
+
+    # pytype: enable=module-attr
+
+    self._signature = sig.replace('typing.', '')
 
   def get_metadata_html(self) -> str:
     return Metadata(self.full_name).build_html()
@@ -1672,7 +1722,7 @@ class ClassPageInfo(PageInfo):
   """Collects docs for a class page.
 
   Attributes:
-    full_name: The full, master name, of the object being documented.
+    full_name: The full, main name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
     defined_in: A _FileLocation describing where the object was defined.
@@ -1695,7 +1745,7 @@ class ClassPageInfo(PageInfo):
     """Initialize a ClassPageInfo.
 
     Args:
-      full_name: The full, master name, of the object being documented.
+      full_name: The full, main name, of the object being documented.
       py_object: The object being documented.
     """
     super(ClassPageInfo, self).__init__(full_name, py_object)
@@ -1986,7 +2036,7 @@ class ModulePageInfo(PageInfo):
   """Collects docs for a module page.
 
   Attributes:
-    full_name: The full, master name, of the object being documented.
+    full_name: The full, main name, of the object being documented.
     short_name: The last part of the full name.
     py_object: The object being documented.
     defined_in: A _FileLocation describing where the object was defined.
@@ -2009,7 +2059,7 @@ class ModulePageInfo(PageInfo):
     """Initialize a `ModulePageInfo`.
 
     Args:
-      full_name: The full, master name, of the object being documented.
+      full_name: The full, main name, of the object being documented.
       py_object: The object being documented.
     """
     super(ModulePageInfo, self).__init__(full_name, py_object)
@@ -2149,20 +2199,20 @@ def docs_for_object(full_name, py_object, parser_config):
   """
 
   # Which other aliases exist for the object referenced by full_name?
-  master_name = parser_config.reference_resolver.py_master_name(full_name)
-  duplicate_names = parser_config.duplicates.get(master_name, [])
-  if master_name in duplicate_names:
-    duplicate_names.remove(master_name)
+  main_name = parser_config.reference_resolver.py_main_name(full_name)
+  duplicate_names = parser_config.duplicates.get(main_name, [])
+  if main_name in duplicate_names:
+    duplicate_names.remove(main_name)
 
   obj_type = get_obj_type(py_object)
   if obj_type is ObjType.CLASS:
-    page_info = ClassPageInfo(master_name, py_object)
+    page_info = ClassPageInfo(main_name, py_object)
   elif obj_type is ObjType.CALLABLE:
-    page_info = FunctionPageInfo(master_name, py_object)
+    page_info = FunctionPageInfo(main_name, py_object)
   elif obj_type is ObjType.MODULE:
-    page_info = ModulePageInfo(master_name, py_object)
+    page_info = ModulePageInfo(main_name, py_object)
   elif obj_type is ObjType.TYPE_ALIAS:
-    page_info = TypeAliasPageInfo(master_name, py_object)
+    page_info = TypeAliasPageInfo(main_name, py_object)
   else:
     raise RuntimeError('Cannot make docs for object {full_name}: {py_object!r}')
 
@@ -2229,13 +2279,12 @@ def _get_defined_in(py_object: Any,
   try:
     lines, start_line = inspect.getsourcelines(py_object)
     end_line = start_line + len(lines) - 1
+    if 'MACHINE GENERATED' in lines[0]:
+      # don't link to files generated by tf_export
+      return None
   except (IOError, TypeError, IndexError):
     start_line = None
     end_line = None
-
-  # TODO(wicke): If this is a generated file, link to the source instead.
-  # TODO(wicke): Move all generated files to a generated/ directory.
-  # TODO(wicke): And make their source file predictable from the file name.
 
   # In case this is compiled, point to the original
   if rel_path.endswith('.pyc'):
@@ -2245,11 +2294,6 @@ def _get_defined_in(py_object: Any,
     # .cpython-3x.pyc or similar are all handled.
     rel_path = rel_path.partition('.')[0] + '.py'
 
-  # Never include links outside this code base.
-  if re.search(r'\b_api\b', rel_path):
-    return None
-  if re.search(r'\bapi/(_v2|_v1)\b', rel_path):
-    return None
   if re.search(r'<[\w\s]+>', rel_path):
     # Built-ins emit paths like <embedded stdlib>, <string>, etc.
     return None
@@ -2302,9 +2346,10 @@ def generate_global_index(library_name, index, reference_resolver):
         (full_name, reference_resolver.python_link(full_name, full_name, '.')))
 
   lines = [f'# All symbols in {library_name}', '']
+  lines.append('<!-- Insert buttons and diff -->\n')
 
   # Sort all the symbols once, so that the ordering is preserved when its broken
-  # up into master symbols and compat symbols and sorting the sublists is not
+  # up into main symbols and compat symbols and sorting the sublists is not
   # required.
   symbol_links = sorted(symbol_links, key=lambda x: x[0])
 
